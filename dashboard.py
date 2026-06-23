@@ -213,6 +213,13 @@ def extract_ticker_data(bulk_df: pd.DataFrame, ticker: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def safe_applymap(styler, func, subset=None):
+    if hasattr(styler, "map"):
+        return styler.map(func, subset=subset)
+    else:
+        return styler.applymap(func, subset=subset)
+
+
 @st.cache_data(ttl=60)
 def fetch_and_analyze_parallel(
     tickers: list[str],
@@ -658,7 +665,7 @@ with tab_scanner:
                     return 'background-color: rgba(245, 158, 11, 0.12); color: #ffd166; font-weight: 500; border: 1px solid rgba(245, 158, 11, 0.2); border-radius: 6px;'
                 return 'color: #94a3b8;'
 
-            styled_table = display_df.style.applymap(style_status_column, subset=["Durum"])
+            styled_table = safe_applymap(display_df.style, style_status_column, subset=["Durum"])
             st.dataframe(styled_table, use_container_width=True, height=480)
             
             # Yenileme butonu
@@ -755,7 +762,7 @@ with tab_analysis:
                             pass
                         return ''
 
-                    styled_trades = trade_df.style.applymap(style_pnl_rows, subset=["Brut PnL (%)", "Net PnL (%)", "Brut PnL (TL)", "Net PnL (TL)"])
+                    styled_trades = safe_applymap(trade_df.style, style_pnl_rows, subset=["Brut PnL (%)", "Net PnL (%)", "Brut PnL (TL)", "Net PnL (TL)"])
                     st.dataframe(styled_trades, use_container_width=True, height=350)
                     
                     # CSV İndirme Butonu
@@ -879,7 +886,8 @@ with tab_viop:
                     pass
                 return ''
                 
-            styled_viop_scanner = viop_scanner_df.style.applymap(
+            styled_viop_scanner = safe_applymap(
+                viop_scanner_df.style, 
                 style_viop_scanner_pnl, 
                 subset=["Net P&L (TL)", "Net P&L (%)"]
             )
@@ -966,7 +974,7 @@ with tab_viop:
                                 pass
                             return ''
                             
-                        styled_viop_trades = viop_trades.style.applymap(style_viop_pnl, subset=["Brut PnL (TL)", "Net PnL (TL)", "Net PnL (%)"])
+                        styled_viop_trades = safe_applymap(viop_trades.style, style_viop_pnl, subset=["Brut PnL (TL)", "Net PnL (TL)", "Net PnL (%)"])
                         st.dataframe(styled_viop_trades, use_container_width=True, height=350)
                         
                         # CSV İndirme Butonu
