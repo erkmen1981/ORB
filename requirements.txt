@@ -3,3 +3,7 @@ pandas
 yfinance
 plotly
 matplotlib
+xlwings
+streamlit-autorefresh
+requests
+

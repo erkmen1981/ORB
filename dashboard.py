@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import os
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import plotly.graph_objects as go
@@ -12,6 +13,33 @@ from range import (
     performance_breakdown,
     simulate_viop_portfolio,
 )
+from database import (
+    init_db,
+    authenticate_user,
+    register_user,
+    get_all_users,
+    update_user_status,
+    delete_user,
+    add_user_by_admin,
+    update_user_role
+)
+from dde_reader import read_live_prices_from_excel
+
+# Streamlit-autorefresh importu (Otomatik eksik paket yükleme mekanizmalı)
+try:
+    from streamlit_autorefresh import st_autorefresh
+except ImportError:
+    import subprocess
+    import sys
+    try:
+        # Sunucunun çalıştığı aktif Python/Sanal Ortam (venv) içine paketi kurar
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "streamlit-autorefresh"])
+        from streamlit_autorefresh import st_autorefresh
+    except Exception:
+        st_autorefresh = None
+
+# Veritabanını başlat
+init_db()
 
 # Sayfa Genişlik ve Tema Ayarları
 st.set_page_config(
@@ -19,6 +47,104 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# YETKİLİ GİRİŞ KONTROLÜ
+def check_login():
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+        st.session_state.username = None
+        st.session_state.role = None
+        
+    # Eski/bozuk oturum durumlarında rol veya kullanıcı adı eksikse oturumu temizle
+    if st.session_state.authenticated:
+        if "username" not in st.session_state or st.session_state.username is None or \
+           "role" not in st.session_state or st.session_state.role is None:
+            st.session_state.authenticated = False
+            st.session_state.username = None
+            st.session_state.role = None
+            st.rerun()
+
+    if "username" not in st.session_state:
+        st.session_state.username = None
+    if "role" not in st.session_state:
+        st.session_state.role = None
+
+    if not st.session_state.authenticated:
+        # Sayfa stilini yükle
+        st.markdown("""
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap');
+            html, body, [class*="css"] {
+                font-family: 'Outfit', sans-serif;
+            }
+        </style>
+        """, unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns([1, 1.8, 1])
+        with col2:
+            st.markdown("<div style='height: 80px;'></div>", unsafe_allow_html=True)
+            st.markdown("""
+            <div style="padding: 30px 24px 20px 24px; border-radius: 16px 16px 0 0; background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(9, 13, 22, 0.99) 100%); border: 1px solid rgba(255,255,255,0.08); border-bottom: none; text-align: center; box-shadow: 0 10px 30px -10px rgba(0,0,0,0.5);">
+                <h2 style="background: linear-gradient(90deg, #c084fc 0%, #6366f1 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-weight: 800; font-size: 2.1rem; margin:0;">🔐 Yetkili Girişi</h2>
+                <p style="color: #64748b; font-size: 0.9rem; margin-top:8px; margin-bottom:0;">ORB Breakout Takip Paneline erişmek için giriş yapın veya kayıt olun.</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            tab_login, tab_register = st.tabs(["Giriş Yap", "Kayıt Ol"])
+            
+            with tab_login:
+                with st.form("login_form"):
+                    username = st.text_input("Kullanıcı Adı", placeholder="Kullanıcı adınızı girin", key="login_username")
+                    password = st.text_input("Şifre", type="password", placeholder="••••••••", key="login_password")
+                    submit = st.form_submit_button("Giriş Yap", use_container_width=True)
+                    
+                    if submit:
+                        user = authenticate_user(username, password)
+                        if user:
+                            status = user["status"]
+                            if status == "APPROVED":
+                                st.session_state.authenticated = True
+                                st.session_state.username = user["username"]
+                                st.session_state.role = user["role"]
+                                st.success("Giriş başarılı! Yönlendiriliyorsunuz...")
+                                st.rerun()
+                            elif status == "PENDING":
+                                st.warning("Üyeliğiniz henüz onaylanmamış. Lütfen yöneticinizin onaylamasını bekleyin.")
+                            elif status == "REJECTED":
+                                st.error("Üyelik talebiniz reddedilmiştir.")
+                        else:
+                            st.error("Hatalı kullanıcı adı veya şifre!")
+                            
+            with tab_register:
+                with st.form("register_form"):
+                    reg_username = st.text_input("Kullanıcı Adı", placeholder="Yeni kullanıcı adı", key="reg_username")
+                    reg_password = st.text_input("Şifre", type="password", placeholder="Şifreniz", key="reg_password")
+                    reg_confirm = st.text_input("Şifre Tekrar", type="password", placeholder="Şifrenizi doğrulayın", key="reg_confirm")
+                    reg_submit = st.form_submit_button("Kayıt Ol", use_container_width=True)
+                    
+                    if reg_submit:
+                        if not reg_username or not reg_password:
+                            st.error("Lütfen tüm alanları doldurun.")
+                        elif reg_password != reg_confirm:
+                            st.error("Şifreler uyuşmuyor.")
+                        else:
+                            success, message = register_user(reg_username, reg_password)
+                            if success:
+                                st.success(message)
+                            else:
+                                st.error(message)
+            
+            st.markdown("""
+            <div style="text-align: center; margin-top: 15px; color: #475569; font-size: 0.8rem;">
+                Protected by Streamlit Session Auth System.
+            </div>
+            """, unsafe_allow_html=True)
+            st.stop()
+
+check_login()
+
+# Giriş yapan kullanıcının yönetici olup olmadığını belirle
+is_admin = st.session_state.get("role") == "ADMIN"
 
 # Premium Arayüz İçin CSS Enjeksiyonu
 st.markdown("""
@@ -122,11 +248,312 @@ BIST_TICKERS = [
     "THYAO.IS", "EREGL.IS", "ASELS.IS", "AKBNK.IS", "GARAN.IS", 
     "TUPRS.IS", "SAHOL.IS", "KCHOL.IS", "SISE.IS", "BIMAS.IS", "ULKER.IS", "BRSAN.IS", "TKFEN.IS", "HALKB.IS", "YKBNK.IS",
     "ISCTR.IS", "ASTOR.IS", "AEFES.IS", "SASA.IS", "HEKTS.IS", "KRDMD.IS", "TOASO.IS", "PETKM.IS", "ENJSA.IS", "EKGYO.IS",
-    "TUPRS.IS", "FROTO.IS"
+    "FROTO.IS", "TAVHL.IS", "ARCLK.IS", "MGROS.IS", "ODAS.IS", "VESTL.IS", "ALARK.IS", "CIMSA.IS", "OYAKC.IS", 
+    "DOAS.IS", "ENKAI.IS", "GUBRF.IS", "PGSUS.IS", "AKSEN.IS", "SOKM.IS", "TRALT.IS", "TRMET.IS", "TSKB.IS", "VAKBN.IS",
+    "HEKTS.IS",
     
 ]
 
 # SİDEBAR - AYARLAR
+st.sidebar.markdown(f"<div style='text-align: center; color: #94a3b8; font-size: 0.95rem; margin-bottom: 10px;'>👤 Giriş Yapan: <b>{st.session_state.username}</b> ({st.session_state.role})</div>", unsafe_allow_html=True)
+
+# Sayfa Navigasyonu (Sadece Adminler Görebilir)
+selected_page = "📈 ORB Dashboard"
+if is_admin:
+    st.sidebar.markdown("---")
+    selected_page = st.sidebar.radio(
+        "📂 Sayfa Navigasyonu",
+        ["📈 ORB Dashboard", "👥 Kullanıcı Yönetimi"],
+        index=0
+    )
+    st.sidebar.markdown("---")
+
+if st.sidebar.button("🔒 Oturumu Kapat", use_container_width=True):
+    st.session_state.authenticated = False
+    st.session_state.username = None
+    st.session_state.role = None
+    st.rerun()
+
+# BİLDİRİM GEÇMİŞİ PANELİ (Sidebar'da gösterim)
+if "signal_history" in st.session_state and st.session_state.signal_history:
+    st.sidebar.markdown("---")
+    with st.sidebar.expander(f"🔔 Son Bildirimler ({len(st.session_state.signal_history)})", expanded=True):
+        # Ters kronolojik sırada göster (en yeni en üstte)
+        for alert in reversed(st.session_state.signal_history):
+            st.markdown(f"<div style='font-size:0.8rem; border-bottom:1px solid rgba(255,255,255,0.06); padding:5px 0; line-height:1.25; color:#e2e8f0;'>{alert}</div>", unsafe_allow_html=True)
+        if st.sidebar.button("Geçmişi Temizle", key="clear_alerts_btn", use_container_width=True):
+            st.session_state.signal_history = []
+            st.rerun()
+
+# VERİ BAĞLANTI AYARLARI
+st.sidebar.header("📡 Veri Bağlantı Ayarları")
+
+data_source_options = ["Yahoo Finance (15 dk Gecikmeli)", "Matriks Bulut (Canlı - Firebase)"]
+if is_admin:
+    data_source_options.append("Matriks DDE (Anlık Canlı Excel)")
+
+data_source = st.sidebar.selectbox(
+    "Veri Kaynağı",
+    data_source_options,
+    index=0
+)
+
+live_prices = {}
+refresh_sec = 5
+
+if data_source in ["Matriks DDE (Anlık Canlı Excel)", "Matriks Bulut (Canlı - Firebase)"]:
+    refresh_sec = st.sidebar.slider("Yenileme Sıklığı (Saniye)", 2, 60, 5, key="live_refresh_slider")
+    
+    # Otomatik yenilemeyi başlat
+    # Alternatif 1: st_autorefresh yüklü ise kullan (En kararlı yöntem)
+    if st_autorefresh is not None:
+        st_autorefresh(interval=refresh_sec * 1000, key=f"live_refresh_{refresh_sec}")
+        
+    # Alternatif 2: Gizli buton ve HTML/JS tıklama mekanizması (Sözde-görünmez img tagı, iframe/sandboxing engellerini aşar)
+    else:
+        # Ekran dışında (off-screen) buton stili enjekte et
+        st.markdown(
+            """
+            <style>
+            div.fn-refresh-btn {
+                position: fixed !important;
+                top: -100px !important;
+                left: -100px !important;
+                width: 1px !important;
+                height: 1px !important;
+                opacity: 0 !important;
+                pointer-events: none !important;
+                z-index: -9999 !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+        st.markdown('<div class="fn-refresh-btn">', unsafe_allow_html=True)
+        if st.button("RerunState", key="hidden_refresh_btn"):
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Streamlit HTML bileşeni ile JavaScript'i sansüre uğramadan güvenli bir şekilde enjekte ederiz
+        import streamlit.components.v1 as components
+        components.html(
+            f"""
+            <script>
+            if (window.parent) {{
+                if (window.parent.myAutorefreshInterval) {{
+                    clearInterval(window.parent.myAutorefreshInterval);
+                }}
+                window.parent.myAutorefreshInterval = setInterval(function() {{
+                    var btn = window.parent.document.querySelector('div.fn-refresh-btn button');
+                    if (btn) {{
+                        btn.click();
+                    }}
+                }}, {refresh_sec * 1000});
+            }}
+            </script>
+            """,
+            height=0,
+            width=0
+        )
+
+# Firebase veya Excel Verisini Yükle
+if data_source == "Matriks DDE (Anlık Canlı Excel)" and is_admin:
+    dde_file_path = st.sidebar.text_input(
+        "DDE Excel Dosya Yolu",
+        value=os.path.join(os.path.dirname(os.path.abspath(__file__)), "matriks_dde.xlsx"),
+        help="Açık olan Matriks DDE Excel dosyasının tam yolunu girin."
+    )
+    # Excel'den canlı fiyatları oku
+    live_prices = read_live_prices_from_excel(dde_file_path)
+    if not live_prices:
+        st.sidebar.warning("⚠️ Excel dosyasından veri okunamadı! Lütfen Excel dosyasının açık olduğundan emin olun.")
+    else:
+        st.sidebar.success(f"🟢 {len(live_prices)} hissenin canlı verisi Excel'den okunuyor.")
+
+elif data_source == "Matriks Bulut (Canlı - Firebase)":
+    # Firebase URL'sini çevre değişkenlerinden veya secrets'tan al
+    firebase_url = os.environ.get("FIREBASE_URL")
+    if not firebase_url:
+        try:
+            firebase_url = st.secrets.get("FIREBASE_URL")
+        except Exception:
+            pass
+            
+    # Eğer bulamadıysak yerel .env dosyasından oku (lokal çalıştırma kolaylığı)
+    if not firebase_url:
+        env_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        if os.path.exists(env_file_path):
+            try:
+                with open(env_file_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            key, val = line.split("=", 1)
+                            if key.strip() == "FIREBASE_URL":
+                                firebase_url = val.strip().strip('"').strip("'")
+                                break
+            except Exception:
+                pass
+            
+    # Yönetici ise arayüzden URL'yi görebilsin/düzenleyebilsin
+    if is_admin:
+        firebase_url = st.sidebar.text_input(
+            "Firebase DB URL",
+            value=firebase_url or "",
+            type="password",
+            help="Firebase Realtime Database URL'niz (örn: https://proje.firebaseio.com/)"
+        )
+        
+    if not firebase_url:
+        if is_admin:
+            st.sidebar.warning("⚠️ Lütfen Firebase DB URL alanını doldurun.")
+        else:
+            st.sidebar.warning("⚠️ Canlı veri kaynağı yapılandırılmamış (Firebase URL eksik).")
+    else:
+        # Firebase'den fiyatları çek
+        try:
+            import requests
+            clean_url = firebase_url.strip()
+            while clean_url.endswith("/"):
+                clean_url = clean_url[:-1]
+            res = requests.get(f"{clean_url}/prices.json", timeout=3.0)
+            if res.status_code == 200:
+                live_prices = res.json() or {}
+                if live_prices:
+                    st.sidebar.success(f"🟢 {len(live_prices)} hissenin canlı verisi buluttan çekildi.")
+                else:
+                    st.sidebar.info("ℹ️ Bulutta henüz veri yok. publisher.py'yi çalıştırın.")
+            else:
+                st.sidebar.error(f"🔴 Bulut Hatası: HTTP {res.status_code}")
+        except Exception as e:
+            st.sidebar.error(f"🔴 Bulut Bağlantı Hatası: {e}")
+
+# Yasal Uyarı
+if data_source in ["Matriks DDE (Anlık Canlı Excel)", "Matriks Bulut (Canlı - Firebase)"]:
+    st.sidebar.markdown(
+        """
+        <div style="font-size: 0.8rem; color: #94a3b8; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 8px; margin-top: 12px;">
+            ⚠️ <b>BIST Canlı Veri Uyarısı:</b> Borsa İstanbul canlı verilerinin dağıtımı lisansa tabidir. Bu ekrandaki verilerin üçüncü şahıslara izinsiz aktarılması yasal sorumluluk doğurabilir.
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+# Hata ayıklama ve teşhis paneli
+with st.sidebar.expander("🛠️ Veritabanı Teşhis Paneli (Hata Ayıklama)"):
+    st.write("Oturum Bilgileri:")
+    st.write(f"- **Kullanıcı**: `{st.session_state.username}`")
+    st.write(f"- **Rol**: `{st.session_state.role}`")
+    st.write(f"- **Yönetici mi?**: `{is_admin}`")
+    st.write(f"- **Veri Kaynağı**: `{data_source}`")
+    if "firebase_url" in locals() and firebase_url:
+        masked = firebase_url[:20] + "..." if len(firebase_url) > 20 else firebase_url
+        st.write(f"- **Firebase URL**: `{masked}`")
+    st.write(f"- **Bulunan Canlı Fiyat Sayısı**: `{len(live_prices)}`")
+    if live_prices:
+        sample_keys = list(live_prices.keys())[:3]
+        sample_data = {k: live_prices[k] for k in sample_keys}
+        st.write(f"- **Örnek Veri**: `{sample_data}`")
+
+# KULLANICI YÖNETİMİ SAYFASI (Eğer admin seçtiyse ve navigasyon tıklandıysa)
+if is_admin and selected_page == "👥 Kullanıcı Yönetimi":
+    st.markdown('<h1 class="dashboard-title">👥 Kullanıcı Yönetim Paneli</h1>', unsafe_allow_html=True)
+    st.markdown("<p class='custom-subtitle'>Sistem Kayıtları, Onaylama ve Yetkilendirme Kontrolleri</p>", unsafe_allow_html=True)
+    
+    # Kullanıcı Listesi
+    users_list = get_all_users()
+    if users_list:
+        users_df = pd.DataFrame(users_list)
+        users_df_display = users_df.copy()
+        users_df_display.columns = ["Kullanıcı Adı", "Onay Durumu", "Rol/Yetki", "Kayıt Tarihi"]
+        
+        st.write("### 📋 Sistemdeki Tüm Kullanıcılar")
+        st.dataframe(users_df_display, use_container_width=True)
+        
+        st.markdown("### ⚙️ Kullanıcı İşlemleri")
+        
+        # Kendisi hariç işlem yapılacak kullanıcılar
+        other_usernames = [u["username"] for u in users_list if u["username"] != st.session_state.username]
+        
+        if other_usernames:
+            selected_user_to_manage = st.selectbox("İşlem yapmak istediğiniz kullanıcıyı seçin:", other_usernames)
+            
+            # Seçilen kullanıcının bilgileri
+            target_user = next(u for u in users_list if u["username"] == selected_user_to_manage)
+            
+            st.markdown(f"""
+            <div style="padding: 16px; border-radius: 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.08); margin-bottom: 20px;">
+                <b>Kullanıcı Adı:</b> {target_user['username']} &nbsp;&nbsp;|&nbsp;&nbsp; 
+                <b>Mevcut Rol:</b> <code>{target_user['role']}</code> &nbsp;&nbsp;|&nbsp;&nbsp; 
+                <b>Mevcut Durum:</b> <code>{target_user['status']}</code> &nbsp;&nbsp;|&nbsp;&nbsp; 
+                <b>Kayıt Tarihi:</b> {target_user['created_at']}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            col_act1, col_act2, col_act3, col_act4 = st.columns(4)
+            
+            # 1. Onayla
+            if target_user["status"] in ["PENDING", "REJECTED"]:
+                if col_act1.button("🟢 Üyeliği Onayla", use_container_width=True):
+                    update_user_status(target_user["username"], "APPROVED")
+                    st.success(f"'{target_user['username']}' kullanıcısı onaylandı!")
+                    st.rerun()
+            else:
+                col_act1.write("*(Kullanıcı zaten onaylı)*")
+                
+            # 2. Reddet
+            if target_user["status"] in ["PENDING", "APPROVED"]:
+                if col_act2.button("🔴 Üyeliği Reddet", use_container_width=True):
+                    update_user_status(target_user["username"], "REJECTED")
+                    st.warning(f"'{target_user['username']}' kullanıcısının üyeliği reddedildi!")
+                    st.rerun()
+            else:
+                col_act2.write("*(Kullanıcı zaten reddedilmiş)*")
+            
+            # 3. Rol Değiştir (ADMIN <-> USER)
+            new_role_val = "ADMIN" if target_user["role"] == "USER" else "USER"
+            role_btn_label = "🔑 Yönetici Yap (Admin)" if target_user["role"] == "USER" else "👤 Standart Üye Yap"
+            if col_act3.button(role_btn_label, use_container_width=True):
+                update_user_role(target_user["username"], new_role_val)
+                st.success(f"'{target_user['username']}' rolü {new_role_val} olarak güncellendi!")
+                st.rerun()
+                
+            # 4. Kullanıcıyı Sil
+            if col_act4.button("🗑️ Kullanıcıyı Sil", use_container_width=True):
+                success, msg = delete_user(target_user["username"])
+                if success:
+                    st.error(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+        else:
+            st.info("Kendi hesabınız dışında işlem yapabileceğiniz başka bir kayıtlı kullanıcı bulunmuyor.")
+    else:
+        st.info("Sistemde kayıtlı kullanıcı bulunamadı.")
+        
+    st.markdown("---")
+    st.subheader("➕ Yeni Kullanıcı Ekle (Manuel)")
+    
+    with st.form("admin_add_user_form_page"):
+        new_user = st.text_input("Kullanıcı Adı", placeholder="Örn: ahmet")
+        new_pass = st.text_input("Şifre", type="password", placeholder="Örn: 123456")
+        new_role = st.selectbox("Yetki Rolü", ["USER", "ADMIN"])
+        new_status = st.selectbox("Giriş İzni", ["APPROVED", "PENDING"])
+        
+        add_btn = st.form_submit_button("Kullanıcıyı Sisteme Ekle", use_container_width=True)
+        if add_btn:
+            if not new_user or not new_pass:
+                st.error("Kullanıcı adı ve şifre boş olamaz.")
+            else:
+                success, msg = add_user_by_admin(new_user, new_pass, new_role, new_status)
+                if success:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+                    
+    st.stop()
+
 st.sidebar.header("⚙️ Genel Ayarlar")
 custom_list = st.sidebar.text_area(
     "İzleme Listesi (.IS uzantılı, virgülle ayrılmış)",
@@ -219,6 +646,174 @@ def safe_applymap(styler, func, subset=None):
     else:
         return styler.applymap(func, subset=subset)
 
+def strip_timezone_from_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    df_copy = df.copy()
+    if getattr(df_copy.index, "tz", None) is not None:
+        df_copy.index = df_copy.index.tz_localize(None)
+    for col in df_copy.columns:
+        if pd.api.types.is_datetime64_any_dtype(df_copy[col]):
+            try:
+                df_copy[col] = pd.to_datetime(df_copy[col]).dt.tz_localize(None)
+            except Exception:
+                pass
+        elif df_copy[col].dtype == object:
+            try:
+                converted = pd.to_datetime(df_copy[col], errors='ignore')
+                if pd.api.types.is_datetime64_any_dtype(converted):
+                    df_copy[col] = converted.dt.tz_localize(None)
+            except Exception:
+                pass
+    return df_copy
+
+def update_df_with_live_prices(df: pd.DataFrame, live_prices: dict[str, float], allow_short_enabled: bool, end_time: str) -> pd.DataFrame:
+    """Yfinance geçmiş verisine Matriks DDE canlı fiyatlarını giydirir ve sinyalleri anlık günceller."""
+    if df.empty or not live_prices:
+        return df
+        
+    updated_df = df.copy()
+    for idx, row in updated_df.iterrows():
+        ticker = row["Hisse"] # örn: "THYAO" veya "THYAO.IS"
+        ticker_clean = ticker.replace(".IS", "")
+        
+        live_price = None
+        if ticker in live_prices:
+            live_price = live_prices[ticker]
+        elif ticker_clean in live_prices:
+            live_price = live_prices[ticker_clean]
+            
+        if live_price is not None:
+            range_high = row[f"Range High ({end_time})"]
+            range_low = row[f"Range Low ({end_time})"]
+            last_signal = int(row.get("Son Sinyal", 0))
+            
+            # Fiyatı güncelle
+            updated_df.at[idx, "Son Fiyat"] = live_price
+            
+            # Uzaklıkları güncelle
+            updated_df.at[idx, "Kanal Üstüne Uzaklık (%)"] = round(((live_price - range_high) / range_high) * 100, 2)
+            updated_df.at[idx, "Kanal Altına Uzaklık (%)"] = round(((live_price - range_low) / range_low) * 100, 2)
+            
+            # Sinyal Durumunu Devlet/Durum Mantığıyla (Stateful) Güncelle
+            status = "⏳ Kanal İçi / Beklemede"
+            if live_price > range_high:
+                status = "🚀 AL (Kırılım Gerçekleşti - Pozisyonda)"
+            elif live_price < range_low:
+                if allow_short_enabled:
+                    status = "📉 AÇIĞA SAT (Kırılım Gerçekleşti - Pozisyonda)"
+                else:
+                    status = "📤 POZ KAPAT / SAT"
+            else:
+                # Fiyat kanalın içindeyse, pozisyon durumunu koru
+                if last_signal == 1:
+                    status = "🚀 AL (Kanal İçi - Pozisyonda)"
+                elif last_signal == -1:
+                    status = "📉 AÇIĞA SAT (Kanalı İçi - Pozisyonda)"
+                else:
+                    # Günlük sinyal geçmişinde işlem var mı kontrol et
+                    if last_signal == 0 and "Durum" in row and "POZ KAPAT" in str(row["Durum"]):
+                        status = "📤 POZ KAPAT / NAKİT"
+                    else:
+                        status = "⏳ Kanal İçi / Beklemede"
+                        
+            updated_df.at[idx, "Durum"] = status
+            
+            # Güncelleme saatini saniyeli yazalım
+            updated_df.at[idx, "Son Güncelleme"] = datetime.now().strftime("%H:%M:%S")
+            
+    return updated_df
+
+def update_open_trades_with_live_prices(trades_df: pd.DataFrame, live_prices: dict[str, float], qty: float, commission_bps: float, slippage_bps: float) -> pd.DataFrame:
+    if trades_df.empty or not live_prices:
+        return trades_df
+        
+    updated = trades_df.copy()
+    commission_rate = commission_bps / 10000.0
+    slippage_rate = slippage_bps / 10000.0
+    cost_rate_side = commission_rate + slippage_rate
+    
+    for idx, row in updated.iterrows():
+        if row["Durum"] == "ACIK":
+            ticker = row["Hisse"]
+            live_price = None
+            if ticker in live_prices:
+                live_price = live_prices[ticker]
+            elif f"{ticker}.IS" in live_prices:
+                live_price = live_prices[f"{ticker}.IS"]
+                
+            if live_price is not None:
+                entry_price = float(row["Giris Fiyat"])
+                # PnL hesaplama
+                if row["Yon"] == "LONG":
+                    gross_pct = ((live_price - entry_price) / entry_price) * 100
+                    gross_tl = (live_price - entry_price) * qty
+                else:
+                    gross_pct = ((entry_price - live_price) / entry_price) * 100
+                    gross_tl = (entry_price - live_price) * qty
+                    
+                cost_tl = (entry_price + live_price) * qty * cost_rate_side
+                cost_pct = ((cost_tl / (entry_price * qty)) * 100) if entry_price > 0 and qty > 0 else 0.0
+                net_pct = gross_pct - cost_pct
+                net_tl = gross_tl - cost_tl
+                
+                updated.at[idx, "Cikis Fiyat"] = round(live_price, 4)
+                updated.at[idx, "Brut PnL (%)"] = round(gross_pct, 2)
+                updated.at[idx, "Maliyet (%)"] = round(cost_pct, 2)
+                updated.at[idx, "Net PnL (%)"] = round(net_pct, 2)
+                updated.at[idx, "Brut PnL (TL)"] = round(gross_tl, 2)
+                updated.at[idx, "Maliyet (TL)"] = round(cost_tl, 2)
+                updated.at[idx, "Net PnL (TL)"] = round(net_tl, 2)
+                
+    return updated
+
+def recalculate_trades_to_viop(trades_df: pd.DataFrame, balance: float = 100000.0, margin_pct: float = 0.20, commission_bps: float = 1.0, slippage_bps: float = 5.0) -> pd.DataFrame:
+    if trades_df.empty:
+        return trades_df
+        
+    recalculated = trades_df.copy()
+    cost_rate = (commission_bps + slippage_bps) / 10000.0
+    
+    for idx, row in recalculated.iterrows():
+        entry_price = float(row["Giris Fiyat"])
+        exit_price = row["Cikis Fiyat"]
+        if pd.isna(exit_price) or exit_price is None:
+            exit_price = entry_price
+        else:
+            exit_price = float(exit_price)
+            
+        # 1 kontrat teminatı = Giriş Fiyatı * 100 * margin_pct
+        margin_per_contract = entry_price * 100.0 * margin_pct
+        if margin_per_contract > 0:
+            contracts = int(balance // margin_per_contract)
+        else:
+            contracts = 0
+            
+        if contracts < 1:
+            contracts = 1
+            
+        yon = row["Yon"]
+        if yon == "LONG":
+            gross_tl = (exit_price - entry_price) * 100.0 * contracts
+            gross_pct = ((exit_price - entry_price) / entry_price) * 100.0 if entry_price > 0 else 0.0
+        else: # SHORT
+            gross_tl = (entry_price - exit_price) * 100.0 * contracts
+            gross_pct = ((entry_price - exit_price) / entry_price) * 100.0 if entry_price > 0 else 0.0
+            
+        cost_tl = (entry_price + exit_price) * 100.0 * contracts * cost_rate
+        cost_pct = ((cost_tl / (entry_price * contracts * 100.0)) * 100.0) if entry_price > 0 and contracts > 0 else 0.0
+        net_tl = gross_tl - cost_tl
+        net_pct = gross_pct - cost_pct
+        
+        recalculated.at[idx, "Adet/Lot"] = contracts
+        recalculated.at[idx, "Brut PnL (%)"] = round(gross_pct, 2)
+        recalculated.at[idx, "Maliyet (%)"] = round(cost_pct, 2)
+        recalculated.at[idx, "Net PnL (%)"] = round(net_pct, 2)
+        recalculated.at[idx, "Brut PnL (TL)"] = round(gross_tl, 2)
+        recalculated.at[idx, "Maliyet (TL)"] = round(cost_tl, 2)
+        recalculated.at[idx, "Net PnL (TL)"] = round(net_tl, 2)
+        
+    return recalculated
 
 @st.cache_data(ttl=60)
 def fetch_and_analyze_parallel(
@@ -235,6 +830,7 @@ def fetch_and_analyze_parallel(
     exec_delay: int,
 ):
     results = []
+    all_trades_list = []
     orb_lookback = get_orb_lookback(start_time, end_time, interval)
     
     from range import normalize_period_for_interval
@@ -254,7 +850,7 @@ def fetch_and_analyze_parallel(
         bulk_raw = pd.DataFrame()
 
     if bulk_raw.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
         
     for ticker in tickers:
         try:
@@ -289,16 +885,23 @@ def fetch_and_analyze_parallel(
             current_time = df_today.index[-1].strftime('%H:%M')
             islem_saati = df_today.index[-1].time() >= datetime.strptime(end_time, "%H:%M").time()
             
+            # Son satırdaki sinyal durumunu kontrol et
+            last_signal = 0
+            if "Signal" in df_today.columns and not df_today.empty:
+                last_signal = int(df_today["Signal"].iloc[-1])
+            
             status = "⏳ Kanal İçi / Beklemede"
             
             if islem_saati:
-                if current_close > kesin_high:
-                    status = "🚀 AL (Kanalı Yukarı Kırdı)"
-                elif current_close < kesin_low:
-                    if allow_short_enabled:
-                        status = "📉 AÇIĞA SAT (Kanalı Aşağı Kırdı)"
+                if last_signal == 1:
+                    status = "🚀 AL (Kırılım Gerçekleşti - Pozisyonda)"
+                elif last_signal == -1:
+                    status = "📉 AÇIĞA SAT (Kırılım Gerçekleşti - Pozisyonda)"
+                elif last_signal == 0:
+                    if (df_today["Signal"] != 0).any():
+                        status = "📤 POZ KAPAT / NAKİT"
                     else:
-                        status = "📤 POZ KAPAT / SAT"
+                        status = "⏳ Kanal İçi / Beklemede"
             else:
                 status = f"⏱️ {end_time} Öncesi - Kanal Oluşuyor"
                 
@@ -313,6 +916,11 @@ def fetch_and_analyze_parallel(
             )
             t_stats = trade_statistics(trades)
             
+            if not trades.empty:
+                trades_copy = trades.copy()
+                trades_copy["Hisse"] = ticker.replace(".IS", "")
+                all_trades_list.append(trades_copy)
+            
             results.append({
                 "Hisse": ticker.replace(".IS", ""),
                 "Son Fiyat": round(current_close, 2),
@@ -321,6 +929,8 @@ def fetch_and_analyze_parallel(
                 "Kanal Üstüne Uzaklık (%)": round(dist_to_high, 2),
                 "Kanal Altına Uzaklık (%)": round(dist_to_low, 2),
                 "Durum": status,
+                "Son Güncelleme": current_time,
+                "Son Sinyal": last_signal,
                 "5G ORB Getiri (%)": round(bt_info["strategy_pct"], 2),
                 "5G Al-Tut (%)": round(bt_info["market_pct"], 2),
                 "İşlem Sayısı": int(bt_info["total_trades"]),
@@ -329,11 +939,17 @@ def fetch_and_analyze_parallel(
                 "Max DD (%)": round(bt_info["max_drawdown_pct"], 2),
                 "Veri Gunu": str(last_day),
                 "Son Güncelleme": current_time,
+                
             })
         except Exception:
             continue
             
-    return pd.DataFrame(results)
+    if all_trades_list:
+        all_trades_df = pd.concat(all_trades_list, ignore_index=True)
+    else:
+        all_trades_df = pd.DataFrame()
+        
+    return pd.DataFrame(results), all_trades_df
 
 
 @st.cache_data(ttl=60)
@@ -424,6 +1040,21 @@ def generate_viop_scanner_data(
 
 # İnteraktif Plotly Çizim Fonksiyonu
 def create_interactive_plot(df: pd.DataFrame, ticker: str, start_time: str, end_time: str, trades: pd.DataFrame = None):
+    # Plotly JSON serialization hatasını önlemek için zaman dilimi (timezone) bilgisini kaldır
+    df_plot = df.copy()
+    if df_plot.index.tz is not None:
+        df_plot.index = df_plot.index.tz_localize(None)
+
+    trades_plot = None
+    if trades is not None and not trades.empty:
+        trades_plot = trades.copy()
+        for col in ["Giris Zamani", "Cikis Zamani"]:
+            if col in trades_plot.columns:
+                try:
+                    trades_plot[col] = pd.to_datetime(trades_plot[col]).dt.tz_localize(None)
+                except Exception:
+                    pass
+
     fig = make_subplots(
         rows=2, cols=1, 
         shared_xaxes=True, 
@@ -435,8 +1066,8 @@ def create_interactive_plot(df: pd.DataFrame, ticker: str, start_time: str, end_
     # 1. Kapanış Fiyatı Çizgisi
     fig.add_trace(
         go.Scatter(
-            x=df.index, 
-            y=df["Close"], 
+            x=df_plot.index, 
+            y=df_plot["Close"], 
             name="Kapanış Fiyatı",
             line=dict(color="#3b82f6", width=2),
             hovertemplate="Tarih: %{x}<br>Fiyat: %{y:.2f} TL<extra></extra>"
@@ -447,8 +1078,8 @@ def create_interactive_plot(df: pd.DataFrame, ticker: str, start_time: str, end_
     # 2. Kanal Üst Sınırı (Range High)
     fig.add_trace(
         go.Scatter(
-            x=df.index, 
-            y=df["Range_High"], 
+            x=df_plot.index, 
+            y=df_plot["Range_High"], 
             name="Kanal Üst Sınırı (High)",
             line=dict(color="#10b981", width=1.5, dash="dash"),
             hovertemplate="Kanal Üstü: %{y:.2f} TL<extra></extra>"
@@ -459,8 +1090,8 @@ def create_interactive_plot(df: pd.DataFrame, ticker: str, start_time: str, end_
     # 3. Kanal Alt Sınırı (Range Low)
     fig.add_trace(
         go.Scatter(
-            x=df.index, 
-            y=df["Range_Low"], 
+            x=df_plot.index, 
+            y=df_plot["Range_Low"], 
             name="Kanal Alt Sınırı (Low)",
             line=dict(color="#ef4444", width=1.5, dash="dash"),
             hovertemplate="Kanal Altı: %{y:.2f} TL<extra></extra>"
@@ -469,9 +1100,9 @@ def create_interactive_plot(df: pd.DataFrame, ticker: str, start_time: str, end_
     )
 
     # Sinyal Noktaları (Markers)
-    if trades is not None and not trades.empty:
+    if trades_plot is not None and not trades_plot.empty:
         # Long Girişler
-        longs = trades[trades["Yon"] == "LONG"]
+        longs = trades_plot[trades_plot["Yon"] == "LONG"]
         if not longs.empty:
             fig.add_trace(
                 go.Scatter(
@@ -502,7 +1133,7 @@ def create_interactive_plot(df: pd.DataFrame, ticker: str, start_time: str, end_
                 )
                 
         # Short Girişler (Açığa Satış)
-        shorts = trades[trades["Yon"] == "SHORT"]
+        shorts = trades_plot[trades_plot["Yon"] == "SHORT"]
         if not shorts.empty:
             fig.add_trace(
                 go.Scatter(
@@ -534,8 +1165,8 @@ def create_interactive_plot(df: pd.DataFrame, ticker: str, start_time: str, end_
     # 2. Grafik: Kümülatif Getiri
     fig.add_trace(
         go.Scatter(
-            x=df.index,
-            y=df["Cum_Market_Return"] * 100,
+            x=df_plot.index,
+            y=df_plot["Cum_Market_Return"] * 100,
             name="Al-Tut (Market)",
             line=dict(color="#64748b", width=1.5),
             hovertemplate="Market Getirisi: %{y:.2f}%<extra></extra>"
@@ -545,8 +1176,8 @@ def create_interactive_plot(df: pd.DataFrame, ticker: str, start_time: str, end_
     
     fig.add_trace(
         go.Scatter(
-            x=df.index,
-            y=df["Cum_Strategy_Return"] * 100,
+            x=df_plot.index,
+            y=df_plot["Cum_Strategy_Return"] * 100,
             name="ORB Stratejisi",
             line=dict(color="#8b5cf6", width=2.5),
             hovertemplate="ORB Strateji Getirisi: %{y:.2f}%<extra></extra>"
@@ -589,7 +1220,7 @@ if not tickers:
 selected_interval, selected_period = get_interval_and_period(interval_label)
 
 # Veriyi arka planda paralel çek ve analiz et
-data_df = fetch_and_analyze_parallel(
+data_df, all_trades_df = fetch_and_analyze_parallel(
     tickers=tickers,
     start_time=range_start.strftime("%H:%M"),
     end_time=range_end.strftime("%H:%M"),
@@ -603,11 +1234,73 @@ data_df = fetch_and_analyze_parallel(
     exec_delay=0 if execution_mode.startswith("Aynı") else 1,
 )
 
+# Matriks canlı fiyatlarını giydir (Excel DDE veya Firebase Bulut)
+if data_source in ["Matriks DDE (Anlık Canlı Excel)", "Matriks Bulut (Canlı - Firebase)"] and live_prices:
+    data_df = update_df_with_live_prices(
+        data_df,
+        live_prices,
+        allow_short_enabled=allow_short,
+        end_time=range_end.strftime("%H:%M")
+    )
+    if not all_trades_df.empty:
+        all_trades_df = update_open_trades_with_live_prices(
+            all_trades_df,
+            live_prices,
+            qty=quantity,
+            commission_bps=commission_bps,
+            slippage_bps=slippage_bps
+        )
+
+# Yeni Sinyal Tetiklenme Algılama ve Bildirim Sistemi (st.toast)
+if "prev_signal_states" not in st.session_state:
+    st.session_state.prev_signal_states = {}
+
+if "signal_history" not in st.session_state:
+    st.session_state.signal_history = []
+
+if not data_df.empty:
+    for idx, row in data_df.iterrows():
+        ticker = row["Hisse"]
+        current_status = row["Durum"]
+        
+        # Sinyal tipini belirle (AL, SAT, BEKLE)
+        short_state = "BEKLE"
+        if "AL" in current_status:
+            short_state = "AL"
+        elif "SAT" in current_status or "AÇIĞA" in current_status:
+            short_state = "SAT"
+            
+        # Önceki durumu al
+        prev_state = st.session_state.prev_signal_states.get(ticker)
+        
+        # İlk yükleme değilse ve durum değiştiyse bildirim gönder
+        if prev_state is not None and prev_state != short_state:
+            time_str = datetime.now().strftime("%H:%M:%S")
+            if short_state == "AL":
+                msg = f"🚀 **{ticker}** için YENİ **AL** Sinyali Tetiklendi! (Fiyat: {row['Son Fiyat']} TL)"
+                st.toast(msg, icon="🔔")
+                st.session_state.signal_history.append(f"⏰ {time_str} - 🚀 **{ticker}**: Yeni **AL** Sinyali ({row['Son Fiyat']} TL)")
+            elif short_state == "SAT":
+                msg = f"📉 **{ticker}** için YENİ **SAT / AÇIĞA SAT** Sinyali Tetiklendi! (Fiyat: {row['Son Fiyat']} TL)"
+                st.toast(msg, icon="🔔")
+                st.session_state.signal_history.append(f"⏰ {time_str} - 📉 **{ticker}**: Yeni **SAT/SHORT** Sinyali ({row['Son Fiyat']} TL)")
+            elif short_state == "BEKLE" and prev_state in ["AL", "SAT"]:
+                msg = f"📤 **{ticker}**: Pozisyon kapandı, kanal içine geri dönüldü veya nakite geçildi. (Fiyat: {row['Son Fiyat']} TL)"
+                st.toast(msg, icon="ℹ️")
+                st.session_state.signal_history.append(f"⏰ {time_str} - 📤 **{ticker}**: Pozisyon Kapatıldı ({row['Son Fiyat']} TL)")
+                
+        # Durumu güncelle
+        st.session_state.prev_signal_states[ticker] = short_state
+
+    # Tarihçeyi son 30 bildirim ile sınırla
+    st.session_state.signal_history = st.session_state.signal_history[-30:]
+
 # SEKMELERİ TANIMLA
-tab_scanner, tab_analysis, tab_viop, tab_guide = st.tabs([
+tab_scanner, tab_analysis, tab_viop, tab_daily_trades, tab_guide = st.tabs([
     "📋 Sinyal Tarayıcı (Scanner)", 
     "📈 Tek Hisse Analiz & Grafik", 
     "📈 VIOP Portföy Backtest",
+    "📊 Günlük İşlemler",
     "📖 Strateji Açıklaması & Rehber"
 ])
 
@@ -648,6 +1341,19 @@ with tab_scanner:
             </div>
             """, unsafe_allow_html=True)
             
+            # Tablo Filtreleme Seçici (KPI kartlarının altında şık bir düğme grubu)
+            filter_choice = st.radio(
+                "📂 Hisse Filtresi:",
+                [
+                    f"Tümü ({len(data_df)})",
+                    f"🟢 Aktif AL Sinyalleri ({al_sayisi})",
+                    f"🔴 Aktif SAT / AÇIĞA SAT ({sat_sayisi})",
+                    f"⏳ Bekleme / Oluşumda ({bekle_sayisi})"
+                ],
+                horizontal=True,
+                index=0
+            )
+
             st.subheader("Hisse Sinyal Matrisi")
             
             # DataFrame Görsel İyileştirmesi ve Pandas Styling
@@ -655,6 +1361,16 @@ with tab_scanner:
                 by=["Durum", "Kanal Üstüne Uzaklık (%)"], 
                 ascending=[True, False]
             )
+            # Son Sinyal kolonunu kullanıcıdan gizle
+            display_df = display_df.drop(columns=["Son Sinyal"], errors="ignore")
+            
+            # Seçilen filtreyi dataframe'e uygula
+            if "Aktif AL Sinyalleri" in filter_choice:
+                display_df = display_df[display_df["Durum"].str.contains("AL")]
+            elif "Aktif SAT / AÇIĞA SAT" in filter_choice:
+                display_df = display_df[display_df["Durum"].str.contains("SAT|AÇIĞA", regex=True)]
+            elif "Bekleme / Oluşumda" in filter_choice:
+                display_df = display_df[display_df["Durum"].str.contains("Beklemede|Öncesi", regex=True)]
             
             def style_status_column(val):
                 if "AL" in str(val):
@@ -680,8 +1396,9 @@ with tab_scanner:
 with tab_analysis:
     if not data_df.empty:
         st.subheader("Tek Hisse Derinlemesine Backtest & Detayları")
+        
         selected_symbol = st.selectbox("Analiz edilecek hisseyi seçin", data_df["Hisse"].tolist())
-        selected_ticker = f"{selected_symbol}.IS"
+        selected_ticker = f"{selected_symbol.split(' ')[0]}.IS"
         
         # Seçili hissenin backtestini tekrar hızlıca al
         selected_bt = run_backtest(
@@ -698,6 +1415,19 @@ with tab_analysis:
         )
         
         if not selected_bt.empty:
+            # Matriks canlı fiyatını son satıra giydir (Excel DDE veya Firebase Bulut)
+            ticker_short = selected_symbol
+            if data_source in ["Matriks DDE (Anlık Canlı Excel)", "Matriks Bulut (Canlı - Firebase)"] and live_prices:
+                live_price = None
+                if ticker_short in live_prices:
+                    live_price = live_prices[ticker_short]
+                elif f"{ticker_short}.IS" in live_prices:
+                    live_price = live_prices[f"{ticker_short}.IS"]
+                
+                if live_price is not None:
+                    selected_bt.loc[selected_bt.index[-1], "Close"] = live_price
+        
+        if not selected_bt.empty:
             # Gerekli günlük ve istatistikleri çek
             trade_df = generate_trade_log(
                 selected_bt,
@@ -707,6 +1437,11 @@ with tab_analysis:
             )
             stats = trade_statistics(trade_df)
             daily_df, weekly_df, max_dd = performance_breakdown(selected_bt)
+            
+            # Zaman diliminden kaynaklı PyArrow serileştirme hatalarını önlemek için kopyaları naive yap
+            trade_df_display = strip_timezone_from_df(trade_df)
+            daily_df_display = strip_timezone_from_df(daily_df)
+            weekly_df_display = strip_timezone_from_df(weekly_df)
             
             # Gelişmiş Risk Metriklerini Kartlarla Yazdır
             st.markdown(f"""
@@ -762,11 +1497,11 @@ with tab_analysis:
                             pass
                         return ''
 
-                    styled_trades = safe_applymap(trade_df.style, style_pnl_rows, subset=["Brut PnL (%)", "Net PnL (%)", "Brut PnL (TL)", "Net PnL (TL)"])
+                    styled_trades = safe_applymap(trade_df_display.style, style_pnl_rows, subset=["Brut PnL (%)", "Net PnL (%)", "Brut PnL (TL)", "Net PnL (TL)"])
                     st.dataframe(styled_trades, use_container_width=True, height=350)
                     
                     # CSV İndirme Butonu
-                    csv_data = trade_df.to_csv(index=False).encode('utf-8')
+                    csv_data = trade_df_display.to_csv(index=False).encode('utf-8')
                     st.download_button(
                         label="📥 İşlem Günlüğünü Excel/CSV Olarak İndir",
                         data=csv_data,
@@ -802,22 +1537,27 @@ with tab_analysis:
             col_day, col_week = st.columns(2)
             with col_day:
                 st.subheader("📅 Günlük Performans Özeti (Son 15 Gün)")
-                st.dataframe(daily_df.tail(15).rename(columns={"Gunluk Getiri (%)": "Günlük Getiri (%)"}), use_container_width=True, height=250)
+                st.dataframe(daily_df_display.tail(15).rename(columns={"Gunluk Getiri (%)": "Günlük Getiri (%)"}), use_container_width=True, height=250)
             with col_week:
                 st.subheader("📆 Haftalık Performans Özeti (Son 10 Hafta)")
-                st.dataframe(weekly_df.tail(10).rename(columns={"Haftalik Getiri (%)": "Haftalık Getiri (%)"}), use_container_width=True, height=250)
+                st.dataframe(weekly_df_display.tail(10).rename(columns={"Haftalik Getiri (%)": "Haftalık Getiri (%)"}), use_container_width=True, height=250)
         else:
             st.warning("Seçilen hisse için backtest verisi çekilemedi.")
     else:
         st.warning("Hisse verileri yüklenemedi.")
 def create_viop_balance_plot(portfolio_df: pd.DataFrame, ticker: str, start_balance: float):
+    # Plotly JSON serialization hatasını önlemek için zaman dilimi (timezone) bilgisini kaldır
+    df_plot = portfolio_df.copy()
+    if df_plot.index.tz is not None:
+        df_plot.index = df_plot.index.tz_localize(None)
+
     fig = go.Figure()
     
     # Portföy Bakiye Eğrisi
     fig.add_trace(
         go.Scatter(
-            x=portfolio_df.index,
-            y=portfolio_df["Bakiye"],
+            x=df_plot.index,
+            y=df_plot["Bakiye"],
             name="Portföy Bakiyesi",
             line=dict(color="#10b981", width=2.5),
             fill='tozeroy',
@@ -829,9 +1569,9 @@ def create_viop_balance_plot(portfolio_df: pd.DataFrame, ticker: str, start_bala
     # Başlangıç bakiyesi referans çizgisi
     fig.add_shape(
         type="line",
-        x0=portfolio_df.index[0],
+        x0=df_plot.index[0],
         y0=start_balance,
-        x1=portfolio_df.index[-1],
+        x1=df_plot.index[-1],
         y1=start_balance,
         line=dict(color="#64748b", width=1.5, dash="dash"),
     )
@@ -898,7 +1638,7 @@ with tab_viop:
         st.markdown("---")
         st.subheader("🔍 Tek Hisse VIOP Detay Analizi")
         selected_viop_symbol = st.selectbox("VIOP Analizi için Hisse Seçin", data_df["Hisse"].tolist(), key="viop_symbol_select")
-        selected_viop_ticker = f"{selected_viop_symbol}.IS"
+        selected_viop_ticker = f"{selected_viop_symbol.split(' ')[0]}.IS"
         
         # Seçili hissenin backtest verilerini çek
         viop_bt = run_backtest(
@@ -915,6 +1655,19 @@ with tab_viop:
         )
         
         if not viop_bt.empty:
+            # Matriks canlı fiyatını son satıra giydir (Excel DDE veya Firebase Bulut)
+            ticker_short = selected_viop_symbol.split(' ')[0]
+            if data_source in ["Matriks DDE (Anlık Canlı Excel)", "Matriks Bulut (Canlı - Firebase)"] and live_prices:
+                live_price = None
+                if ticker_short in live_prices:
+                    live_price = live_prices[ticker_short]
+                elif f"{ticker_short}.IS" in live_prices:
+                    live_price = live_prices[f"{ticker_short}.IS"]
+                
+                if live_price is not None:
+                    viop_bt.loc[viop_bt.index[-1], "Close"] = live_price
+        
+        if not viop_bt.empty:
             # VIOP Portföy simülasyonunu çalıştır
             viop_portfolio, viop_trades, viop_summary = simulate_viop_portfolio(
                 df=viop_bt,
@@ -923,6 +1676,9 @@ with tab_viop:
                 commission_bps=viop_commission_bps,
                 slippage_bps=viop_slippage_bps
             )
+            
+            # Zaman diliminden kaynaklı PyArrow serileştirme hatalarını önlemek için kopyaları naive yap
+            viop_trades_display = strip_timezone_from_df(viop_trades)
             
             if not viop_portfolio.empty:
                 # Portföy Özet Metrikleri
@@ -974,11 +1730,11 @@ with tab_viop:
                                 pass
                             return ''
                             
-                        styled_viop_trades = safe_applymap(viop_trades.style, style_viop_pnl, subset=["Brut PnL (TL)", "Net PnL (TL)", "Net PnL (%)"])
+                        styled_viop_trades = safe_applymap(viop_trades_display.style, style_viop_pnl, subset=["Brut PnL (TL)", "Net PnL (TL)", "Net PnL (%)"])
                         st.dataframe(styled_viop_trades, use_container_width=True, height=350)
                         
                         # CSV İndirme Butonu
-                        viop_csv = viop_trades.to_csv(index=False).encode('utf-8')
+                        viop_csv = viop_trades_display.to_csv(index=False).encode('utf-8')
                         st.download_button(
                             label="📥 VIOP İşlemlerini Excel/CSV Olarak İndir",
                             data=viop_csv,
@@ -1015,7 +1771,136 @@ with tab_viop:
     else:
         st.warning("Hisse verileri yüklenemedi.")
 
-# TAB 4: STRATEJİ REHBERİ
+# TAB 4: GÜNLÜK İŞLEMLER
+with tab_daily_trades:
+    st.subheader("📆 Günlük İşlem Takip Listesi")
+    st.markdown("Bugün açılan veya kapatılan tüm işlemler, güncel kar/zarar durumlarıyla birlikte burada listelenir.")
+    
+    trades_today = pd.DataFrame()
+    if not all_trades_df.empty:
+        # Zaman kolonlarını güvenli bir şekilde datetime formatına çevir
+        giris_dt = pd.to_datetime(all_trades_df["Giris Zamani"], errors="coerce")
+        cikis_dt = pd.to_datetime(all_trades_df["Cikis Zamani"], errors="coerce")
+        
+        # yfinance verilerindeki en son tarihi bul
+        latest_datetime = giris_dt.max()
+        latest_date = latest_datetime.date() if pd.notna(latest_datetime) else datetime.now().date()
+        
+        trades_today = all_trades_df[
+            (giris_dt.dt.date == latest_date) | 
+            (cikis_dt.dt.date == latest_date)
+        ].copy()
+        
+        # Günlük işlemleri VIOP kaldıraç ve teminat koşullarına göre yeniden hesapla
+        trades_today = recalculate_trades_to_viop(
+            trades_today,
+            balance=viop_starting_balance,
+            margin_pct=viop_margin_pct / 100.0,
+            commission_bps=viop_commission_bps,
+            slippage_bps=viop_slippage_bps
+        )
+        
+    if not trades_today.empty:
+        # Metrikleri hesapla
+        toplam_islem = len(trades_today)
+        karda_olanlar = trades_today[trades_today["Net PnL (TL)"] > 0]
+        zararda_olanlar = trades_today[trades_today["Net PnL (TL)"] < 0]
+        
+        karda_sayisi = len(karda_olanlar)
+        zararda_sayisi = len(zararda_olanlar)
+        toplam_pnl_tl = trades_today["Net PnL (TL)"].sum()
+        
+        success_rate = (karda_sayisi / toplam_islem * 100) if toplam_islem > 0 else 0.0
+        pnl_color = "#10b981" if toplam_pnl_tl >= 0 else "#ef4444"
+        
+        # Premium Metrik Kartları
+        st.markdown(f"""
+        <div class="kpi-container">
+            <div class="kpi-card border-blue">
+                <div class="kpi-title">Bugünkü Toplam İşlem</div>
+                <div class="kpi-value">{toplam_islem}</div>
+            </div>
+            <div class="kpi-card border-green">
+                <div class="kpi-title">🟢 Karda Olan İşlemler</div>
+                <div class="kpi-value">{karda_sayisi}</div>
+            </div>
+            <div class="kpi-card border-red">
+                <div class="kpi-title">🔴 Zararda Olan İşlemler</div>
+                <div class="kpi-value">{zararda_sayisi}</div>
+            </div>
+            <div class="kpi-card border-purple">
+                <div class="kpi-title">🏆 Başarı Oranı</div>
+                <div class="kpi-value">%{success_rate:.2f}</div>
+            </div>
+            <div class="kpi-card" style="border-left: 5px solid {pnl_color}; box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);">
+                <div class="kpi-title" style="color: {pnl_color}; font-weight: bold;">💰 Toplam Net Kar/Zarar</div>
+                <div class="kpi-value" style="color: {pnl_color};">{toplam_pnl_tl:,.2f} TL</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        st.write("")
+        
+        # Tabloyu düzenle ve formatla
+        display_trades = trades_today.copy()
+        display_trades = strip_timezone_from_df(display_trades)
+        
+        cols_to_show = ["Hisse", "Yon", "Giris Zamani", "Cikis Zamani", "Giris Fiyat", "Cikis Fiyat", "Adet/Lot", "Net PnL (%)", "Net PnL (TL)", "Durum", "Kapanis Nedeni"]
+        cols_to_show = [c for c in cols_to_show if c in display_trades.columns]
+        display_trades = display_trades[cols_to_show]
+        
+        rename_cols = {
+            "Hisse": "Hisse Kodu",
+            "Yon": "İşlem Yönü",
+            "Giris Zamani": "Giriş Zamanı",
+            "Cikis Zamani": "Çıkış Zamanı",
+            "Giris Fiyat": "Giriş Fiyatı",
+            "Cikis Fiyat": "Son / Çıkış Fiyatı",
+            "Adet/Lot": "Kontrat Sayısı",
+            "Net PnL (%)": "Net P&L (%)",
+            "Net PnL (TL)": "Net P&L (TL)",
+            "Durum": "İşlem Durumu",
+            "Kapanis Nedeni": "Kapanış Nedeni"
+        }
+        display_trades = display_trades.rename(columns=rename_cols)
+        
+        # Stilleri uygula
+        def style_daily_pnl(val):
+            try:
+                val_float = float(val)
+                if val_float > 0:
+                    return 'color: #00ffb7; font-weight: bold; background-color: rgba(16, 185, 129, 0.1);'
+                elif val_float < 0:
+                    return 'color: #ff5252; font-weight: bold; background-color: rgba(239, 68, 68, 0.1);'
+            except ValueError:
+                pass
+            return ''
+            
+        def style_direction(val):
+            if str(val) == "LONG":
+                return 'color: #00ffb7; font-weight: bold;'
+            elif str(val) == "SHORT":
+                return 'color: #ff5252; font-weight: bold;'
+            return ''
+            
+        styled_daily_trades = safe_applymap(display_trades.style, style_daily_pnl, subset=["Net P&L (%)", "Net P&L (TL)"])
+        styled_daily_trades = safe_applymap(styled_daily_trades, style_direction, subset=["İşlem Yönü"])
+        
+        st.dataframe(styled_daily_trades, use_container_width=True, height=400)
+        
+        # CSV İndirme Butonu
+        csv_data = display_trades.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Günlük İşlemleri CSV Olarak İndir",
+            data=csv_data,
+            file_name=f"gunluk_islemler_{latest_date}.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+    else:
+        st.info("Bugün açılan veya kapatılan herhangi bir aktif ORB işlemi bulunmamaktadır.")
+
+# TAB 5: STRATEJİ REHBERİ
 with tab_guide:
     st.subheader("📖 Opening Range Breakout (ORB) Nedir ve Nasıl Çalışır?")
     st.markdown("""

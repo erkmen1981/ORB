@@ -36,10 +36,17 @@ def ensure_istanbul_time(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
+    # Yinelenen zaman etiketlerini temizle (resample çökmelerini önlemek için)
     work = df.sort_index().copy()
+    work = work[~work.index.duplicated(keep="last")]
+    
     idx = work.index
     if getattr(idx, "tz", None) is None:
-        work.index = idx.tz_localize("UTC").tz_convert(IST_TZ)
+        # Yerel CSV verileri zaten İstanbul saatinde olduğu için doğrudan lokalize edilir (saat kaydırılmaz)
+        # Yaz saati geçişlerindeki tutarsızlıkları önlemek için ambiguous ve nonexistent 'NaT' yapılır
+        localized_idx = idx.tz_localize(IST_TZ, ambiguous='NaT', nonexistent='NaT')
+        work.index = localized_idx
+        work = work[work.index.notna()]
     else:
         work.index = idx.tz_convert(IST_TZ)
     return work
@@ -101,15 +108,22 @@ def apply_matriks_orb_logic(
             continue
 
         if strict_end_bar:
-            end_bar = day_df[(day_df.index.time == end_t)]
-            if end_bar.empty:
+            # En azından orb_end saatine kadar günün verisi olduğundan emin ol (10:15 barı zorunluluğu)
+            # Tam dakika bazında sayısal kontrol kullanarak barın kendisinin eksik olduğu durumları da destekle
+            day_times_minutes = day_df.index.hour * 60 + day_df.index.minute
+            end_minutes = end_t.hour * 60 + end_t.minute
+            if not any(day_times_minutes >= end_minutes):
                 continue
 
         # Matriks formuluyle uyumlu: 10:00'dan 10:15 barina kadar olusan seviyeyi sabitle.
         kesin_high = float(day_range["High"].max())
         kesin_low = float(day_range["Low"].min())
 
-        active_mask = day_mask & (pd.Index(work.index.time) >= end_t)
+        # Dakika bazında sayısal karşılaştırma (timezone ve pandas obje karşılaştırma hatalarını önler)
+        work_minutes = work.index.hour * 60 + work.index.minute
+        end_minutes = end_t.hour * 60 + end_t.minute
+        active_mask = day_mask & (work_minutes >= end_minutes)
+        
         work.loc[active_mask, "Range_High"] = kesin_high
         work.loc[active_mask, "Range_Low"] = kesin_low
         work.loc[active_mask, "KesinHigh"] = kesin_high
