@@ -4,6 +4,8 @@ import os
 import requests
 import uuid
 from datetime import datetime
+from zoneinfo import ZoneInfo
+IST_TZ = ZoneInfo("Europe/Istanbul")
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "users.db")
 
@@ -66,7 +68,7 @@ def init_db():
                         "password_hash": hash_val,
                         "status": "APPROVED",
                         "role": "ADMIN",
-                        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        "created_at": datetime.now(IST_TZ).strftime("%Y-%m-%d %H:%M:%S")
                     }
                     requests.put(f"{firebase_url}/users/{username}.json", json=user_data, timeout=3.0)
             return
@@ -166,7 +168,7 @@ def register_user(username: str, password: str) -> tuple[bool, str]:
                 "password_hash": pass_hash,
                 "status": "PENDING",
                 "role": "USER",
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                "created_at": datetime.now(IST_TZ).strftime("%Y-%m-%d %H:%M:%S")
             }
             requests.put(f"{firebase_url}/users/{username}.json", json=user_data, timeout=3.0)
             return True, "Kayıt talebiniz alındı! Yöneticinin onaylaması bekleniyor."
@@ -214,7 +216,7 @@ def add_user_by_admin(username: str, password: str, role: str = "USER", status: 
                 "password_hash": pass_hash,
                 "status": status,
                 "role": role,
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                "created_at": datetime.now(IST_TZ).strftime("%Y-%m-%d %H:%M:%S")
             }
             requests.put(f"{firebase_url}/users/{username}.json", json=user_data, timeout=3.0)
             return True, f"'{username}' kullanıcısı başarıyla oluşturuldu."
@@ -348,7 +350,7 @@ def create_user_session(username: str, role: str) -> str:
             session_data = {
                 "username": username,
                 "role": role,
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                "created_at": datetime.now(IST_TZ).strftime("%Y-%m-%d %H:%M:%S")
             }
             requests.put(f"{firebase_url}/sessions/{token}.json", json=session_data, timeout=3.0)
             return token

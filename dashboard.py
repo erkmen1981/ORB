@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
+IST_TZ = ZoneInfo("Europe/Istanbul")
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -741,7 +743,7 @@ def update_df_with_live_prices(df: pd.DataFrame, live_prices: dict[str, float], 
             updated_df.at[idx, "Durum"] = status
             
             # Güncelleme saatini saniyeli yazalım
-            updated_df.at[idx, "Son Güncelleme"] = datetime.now().strftime("%H:%M:%S")
+            updated_df.at[idx, "Son Güncelleme"] = datetime.now(IST_TZ).strftime("%H:%M:%S")
             
     return updated_df
 
@@ -1296,7 +1298,7 @@ if not data_df.empty:
         
         # İlk yükleme değilse ve durum değiştiyse bildirim gönder
         if prev_state is not None and prev_state != short_state:
-            time_str = datetime.now().strftime("%H:%M:%S")
+            time_str = datetime.now(IST_TZ).strftime("%H:%M:%S")
             if short_state == "AL":
                 msg = f"🚀 **{ticker}** için YENİ **AL** Sinyali Tetiklendi! (Fiyat: {row['Son Fiyat']} TL)"
                 st.toast(msg, icon="🔔")
