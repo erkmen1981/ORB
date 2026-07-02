@@ -21,7 +21,10 @@ from database import (
     update_user_status,
     delete_user,
     add_user_by_admin,
-    update_user_role
+    update_user_role,
+    create_user_session,
+    get_user_by_session,
+    delete_user_session
 )
 from dde_reader import read_live_prices_from_excel
 
@@ -54,6 +57,15 @@ def check_login():
         st.session_state.authenticated = False
         st.session_state.username = None
         st.session_state.role = None
+        
+    # Tarayıcı yenilendiğinde (F5) veya yeni sekmede oturumu otomatik kurtar
+    if not st.session_state.authenticated and "session_token" in st.query_params:
+        user = get_user_by_session(st.query_params["session_token"])
+        if user:
+            st.session_state.authenticated = True
+            st.session_state.username = user["username"]
+            st.session_state.role = user["role"]
+            st.rerun()
         
     # Eski/bozuk oturum durumlarında rol veya kullanıcı adı eksikse oturumu temizle
     if st.session_state.authenticated:
@@ -103,6 +115,10 @@ def check_login():
                         if user:
                             status = user["status"]
                             if status == "APPROVED":
+                                # Oturum tokenı oluştur ve query param olarak kaydet
+                                token = create_user_session(user["username"], user["role"])
+                                st.query_params["session_token"] = token
+                                
                                 st.session_state.authenticated = True
                                 st.session_state.username = user["username"]
                                 st.session_state.role = user["role"]
@@ -269,6 +285,11 @@ if is_admin:
     st.sidebar.markdown("---")
 
 if st.sidebar.button("🔒 Oturumu Kapat", use_container_width=True):
+    # Oturumu veritabanından sil ve URL parametresini temizle
+    if "session_token" in st.query_params:
+        delete_user_session(st.query_params["session_token"])
+        del st.query_params["session_token"]
+        
     st.session_state.authenticated = False
     st.session_state.username = None
     st.session_state.role = None
